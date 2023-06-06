@@ -21,7 +21,7 @@ param(
 
     [Parameter(Mandatory=$false)]
     [string]
-    $neo4JUserName="neo4j"
+    $neo4JUserName="neo4j",
 
     [Parameter(Mandatory=$false)]
     [string]
@@ -37,15 +37,15 @@ if ($neo4JUrl) {
 }
 # Initiate Global Variables
 # The url: https://graph.microsoft.com/ is the service root for REST API communication. It contains the database for extensive information related to Azure Active Directory
-$apiUrl = "https://graph.microsoft.com/"
-
+$global:apiUrl = "https://graph.microsoft.com/"
+$global:importDirectory = $null  # Define the global variable
 # Start Calling Functions #
 Test-Neo4J
 Collect-CAP
 Collect-App
 Collect-Users
 Collect-Groups
-Run-Ingestion
+#Run-Ingestion
 }
 ##################################
 #endregion PRIMARY FUNCTION ######
@@ -59,6 +59,7 @@ Function Test-Neo4J
     # Test the Neo4J local import dir
     # Default API Target is: "http://localhost:7474"
     # Default Neo4j version is 5.6
+    
     $headers = @{
         "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
     }
@@ -82,11 +83,12 @@ Function Test-Neo4J
         Write-Error "Import directory not found in the Neo4j configuration. Please verify the Neo4j installation."
     }
     else {
-        Write-Output "Neo4j Import Directory: $importDirectory"
+        $global:importDirectory = $importDirectory  # Assign value to the global variable
+        Write-Output "Saving JSON return in: $importDirectory"
     }
 }
 Function Collect-CAP
-{
+{   
     # Initialize headers in each function to avoid errors
     $headers = @{
         "Authorization" = "Bearer $accessToken"
@@ -223,12 +225,12 @@ Function Collect-Groups
         Write-Host "Failed to retrieve Groups."
     }    
 }
-Function Run-Ingestion
-{
+#Function Run-Ingestion
+#{
     # Default API Target is: "http://localhost:7474"
     # Default Neo4j version is 5.6
-    $headers = @{
-        "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
-    }
+#    $headers = @{
+#        "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
+#    }
     
-}
+#}
