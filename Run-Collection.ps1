@@ -17,15 +17,15 @@ param(
     
     [Parameter(Mandatory=$false)]
     [string]
-    $neo4JUrl,
+    $neo4JUrl= "http://localhost:7474",
 
     [Parameter(Mandatory=$false)]
     [string]
-    $neo4JUserName,
+    $neo4JUserName="neo4j"
 
     [Parameter(Mandatory=$false)]
     [string]
-    $neo4JPassword
+    $neo4JPassword="neo4j"
 )
 
 if ($neo4JUrl) {
@@ -45,7 +45,7 @@ Collect-CAP
 Collect-App
 Collect-Users
 Collect-Groups
-Create-Relationships
+Run-Ingestion
 }
 ##################################
 #endregion PRIMARY FUNCTION ######
@@ -223,7 +223,7 @@ Function Collect-Groups
         Write-Host "Failed to retrieve Groups."
     }    
 }
-Function Create-Relationships
+Function Run-Ingestion
 {
     # Default API Target is: "http://localhost:7474"
     # Default Neo4j version is 5.6
