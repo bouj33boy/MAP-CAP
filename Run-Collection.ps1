@@ -45,7 +45,7 @@ Collect-CAP
 Collect-App
 Collect-Users
 Collect-Groups
-#Run-Ingestion
+Run-Ingestion
 }
 ##################################
 #endregion PRIMARY FUNCTION ######
@@ -225,12 +225,24 @@ Function Collect-Groups
         Write-Host "Failed to retrieve Groups."
     }    
 }
-#Function Run-Ingestion
-#{
-    # Default API Target is: "http://localhost:7474"
-    # Default Neo4j version is 5.6
-#    $headers = @{
-#        "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
-#    }
-    
-#}
+Function Run-Ingestion
+{
+    #Default API Target is: "http://localhost:7474"
+    #Default Neo4j version is 5.6
+    $headers = @{
+        "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
+    }
+    $cypherQuery = "WITH 'file:///ConditionalAccessPolicies.json' AS url CALL apoc.load.json(url) YIELD value AS data UNWIND data AS policy CREATE (p:Policy) SET p += policy RETURN p"
+
+    $response = Invoke-RestMethod -Uri "$neo4jUrl/db/neo4j/tx/commit" -Headers $headers -Method Post -ContentType "application/json" -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$cypherQuery",
+                "resultDataContents": ["row"]
+            }
+        ]
+    }
+"@
+        
+}

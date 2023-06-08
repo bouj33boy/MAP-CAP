@@ -11,7 +11,8 @@ This script will query query a local neo4j instance and enumerate relationships.
 ---
 # Setup
 ## Initiate default neo4j database
-This POC assumes that the Neo4j version is 5.6. Setup 
+This POC assumes that the Neo4j version is 5.6. Setup
+Make sure to set `apoc.import.file.enabled=true` in your `apoc.conf`
 
 ## Get Graph API AccessToken
 
