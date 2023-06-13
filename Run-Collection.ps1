@@ -2,17 +2,49 @@ Function Run-Collection
 {
 <#
 .SYNOPSIS
-The MAP-CAP project is a script that allows users to gather JSON data about the Conditional Access Policies of an Azure Tenant. 
+The Run-Collection script allows users to gather JSON data about the Conditional Access Policies of an Azure Tenant. 
+In many Azure environments, users are not granted access to view Conditional Access Policies. 
+However, with that same level of permission, users can query the API endpoints of Conditional Access Policies, applications, users, and groups.
+This enables assesors to determine the limiting relationship a Conditional Access Policy has against their profile.
+
 .DESCRIPTION
 Requests data from Azure API Clients to define current Conditional Access Policies and map them in the context of the users.
 POC for Bloodhound graph mapping but for Conditional Access within Azure
+
 .EXAMPLE 
+ipmo ./Run-Collection.ps1
 Run-Collection -accessToken $accessToken
+
 .EXAMPLE 
+ipmo ./Run-Collection.ps1
 Run-Collection -beta -accessToken $accessToken
+
 .EXAMPLE
 ipmo ./Run-Collection.ps1
 Run-Collection -beta -neo4JPassword "PASSWORD" -neo4JUserName "Username" -accessToken $accessToken
+
+.PARAMETER accessToken
+This is the bearer access token granted by your Azure tenant upon successful authentication. 
+View the README.md and follow the steps listed to save your access token as a variable $accessToken
+
+.PARAMETER beta
+This is a context switch that will make the scrip utilize the /beta API endpoint instead of v1.0.
+
+.PARAMETER neo4JURL
+This parameter specifies the neo4j instance to target and ingest the JSON fields. Default is "http://localhost:7474"
+
+.PARAMETER neo4JUserName
+This parameter specifies the neo4j username used for authentication. Default is "neo4j"
+
+.PARAMETER neo4JPassword
+This parameter specifies the neo4j password used for authentication. Default is "neo4j"
+
+.NOTES
+Future state:
+- Considerations surrounding Conditional Access Policy "all" statements
+- Differentiate between applications listed under the user's tenant and service principals
+
+
 
 #>
 [CmdletBinding()]
