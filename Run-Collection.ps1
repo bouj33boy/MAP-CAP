@@ -45,7 +45,6 @@ Collect-CAP
 Collect-App
 Collect-Users
 Collect-Groups
-Run-Ingestion
 }
 ##################################
 #endregion PRIMARY FUNCTION ######
@@ -59,6 +58,8 @@ Function Test-Neo4J
     # Test the Neo4J local import dir
     # Default API Target is: "http://localhost:7474"
     # Default Neo4j version is 5.6
+    # Set unique constraint on Neo4j: 
+    # Run in Neo4j Desktop: CREATE CONSTRAINT BaseObjectID FOR (b:Base) REQUIRE b.objectid IS UNIQUE 
     
     $headers = @{
         "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
@@ -105,22 +106,48 @@ Function Collect-CAP
     $accessPolicies = Invoke-RestMethod -Uri $apiTarget -Headers $headers -Method Get
     if ($accessPolicies -and $accessPolicies.value -match "conditions") {
         Write-Host "Conditional Access Policies retrieved successfully."
-        $outputFile = $importDirectory + "/ConditionalAccessPolicies.json"
-        
-        if (Test-Path $outputFile) {
-            Write-Host "Error: ConditionalAccessPolicies.json already exists in this path."
+        $headers = @{
+            "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
         }
-        else {
-            $parsedaccessPolicies = $accessPolicies | ConvertTo-Json -Depth 100
-            $parsedaccessPolicies | Out-File -FilePath $outputFile -Encoding utf8 -Force
-            $outFileLocation = (Get-Item $outputFile).FullName
-            Write-Host "Conditional Access Policies can be found at $outFileLocation"
+        $accessPolicies.value | %{
+
+            $CAPid = $_.id.ToUpper()
+            $CAPDisplayName = $_.displayName
+            $IncludedApplications = $_.Conditions.applications.includeApplications
+            $IncludedApplications | %{
+                #Write-Host $_ "access is limited by" $CAPid
+                $AppID = $_.ToUpper()
+            }
+            $IncludedUsers = $_.Conditions.users.includeUsers
+            $IncludedUsers | %{
+                #Write-Host $_ " is limited by" $CAPid
+                $UserID = $_.ToUpper()
+            }
+            $IncludedGroups = $_.Conditions.users.includeGroups
+            $IncludedGroups | %{
+                $GroupID = $_.ToUpper
+            }
         }
+        $CreateCAPNodes | %{
+            $query = "MERGE (p:Base {objectid:'$CAPid', displayName:'$CAPDisplayName', AppID:'$AppID', UserID:'$UserID', GroupID:'$GroupID'})"
+
+            $response = Invoke-RestMethod `
+            -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+            -Headers $headers `
+            -Method Post `
+            -ContentType "application/json" `
+            -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
     }
-    else {
-        Write-Host "Failed to retrieve Conditional Access Policies."
+"@`
     }
-    
+}
 }
 Function Collect-App
 {
@@ -140,20 +167,61 @@ Function Collect-App
     $applications = Invoke-RestMethod -Uri $apiTarget -Headers $headers -Method Get
     if ($applications -and $applications.value -match "appRoles") {
         Write-Host "Applications retrieved successfully."
-        $outputFile = $importDirectory + "/Applications.json"
+        $headers = @{
+            "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
+        }
+        $applications.value | %{
+
+            $ApplicationID = $_.appid.ToUpper()
+            $AppDisplayName = $_.displayName
         
-        if (Test-Path $outputFile) {
-            Write-Host "Error: Applications.json already exists in this path."
-        }
-        else {
-            $parsedApplications = $applications | ConvertTo-Json -Depth 100
-            $parsedApplications | Out-File -FilePath $outputFile -Encoding utf8 -Force
-            $outFileLocation = (Get-Item $outputFile).FullName
-            Write-Host "Applications can be found at $outFileLocation"
-        }
+            $CreateAppNodes | %{
+                #Write-Host $_ " is limited by" $CAPid
+                $query = "MERGE (a:Base {objectid:'$ApplicationID', displayName:'$AppDisplayName'})"
+        
+                $response = Invoke-RestMethod `
+                -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                -Headers $headers `
+                -Method Post `
+                -ContentType "application/json" `
+                -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
     }
-    else {
-        Write-Host "Failed to retrieve Applications."
+"@`
+            }
+        } 
+        #Loop through and MERGE request the relationship between the CAP and the APP
+        foreach ($ID in $applications.value.appid.ToUpper())
+        {
+            $headers = @{
+                "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
+            }
+            $query = "MATCH (a:Base) WHERE a.objectid='$ID' MATCH (p:Base) WHERE p.AppID='$ID' MERGE (a)-[:THISISMYTEST]->(p)"
+            #Write-Host $query
+        #}
+            $response = Invoke-RestMethod `
+            -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+            -Headers $headers `
+            -Method Post `
+            -ContentType "application/json" `
+            -Body @"
+{
+    "statements": [
+        {
+            "statement": "$query",
+            "resultDataContents": ["row"]
+        }
+    ]
+}
+"@`
+
+        }
     }
 }
 Function Collect-Users
@@ -174,20 +242,61 @@ Function Collect-Users
     $users = Invoke-RestMethod -Uri $apiTarget -Headers $headers -Method Get
     if ($users -and $users.value -match "accountEnabled") {
         Write-Host "Users retrieved successfully."
-        $outputFile = $importDirectory + "/Users.json"
+        $headers = @{
+            "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
+        }
+        $users.value | %{
+
+            $UserID = $_.id.ToUpper()
+            $UserDisplayName = $_.displayName
         
-        if (Test-Path $outputFile) {
-            Write-Host "Error: Users.json already exists in this path."
-        }
-        else {
-            $parsedUsers = $users | ConvertTo-Json -Depth 100
-            $parsedUsers | Out-File -FilePath $outputFile -Encoding utf8 -Force
-            $outFileLocation = (Get-Item $outputFile).FullName
-            Write-Host "Users can be found at $outFileLocation"
-        }
+            $CreateUserNodes | %{
+                #Write-Host $_ " is limited by" $CAPid
+                $query = "MERGE (u:Base {objectid:'$UserID', displayName:'$UserDisplayName'})"
+        
+                $response = Invoke-RestMethod `
+                -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                -Headers $headers `
+                -Method Post `
+                -ContentType "application/json" `
+                -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
     }
-    else {
-        Write-Host "Failed to retrieve Users."
+"@`
+            }
+        } 
+        #Loop through and MERGE request the relationship between the CAP and the APP
+        foreach ($ID in $users.value.id.ToUpper())
+        {
+            $headers = @{
+                "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
+            }
+            $query = "MATCH (u:Base) WHERE u.objectid='$ID' MATCH (p:Base) WHERE p.UserID='$ID' MERGE (u)-[:IsLimitedBy]->(p)"
+            #Write-Host $query
+        #}
+            $response = Invoke-RestMethod `
+            -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+            -Headers $headers `
+            -Method Post `
+            -ContentType "application/json" `
+            -Body @"
+{
+    "statements": [
+        {
+            "statement": "$query",
+            "resultDataContents": ["row"]
+        }
+    ]
+}
+"@`
+
+        }
     }
 }
 Function Collect-Groups
@@ -199,7 +308,6 @@ Function Collect-Groups
     }
     $apiUrlGroups = "v1.0/groups"
     $betaUrlGroups = "beta/groups"
-    $apiTarget = $apiUrl+$betaUrlGroups
     $apiTarget = if ($beta) 
     { 
         $apiUrl + $betaUrlGroups 
@@ -209,40 +317,60 @@ Function Collect-Groups
     $groups = Invoke-RestMethod -Uri $apiTarget -Headers $headers -Method Get
     if ($groups -and $groups.value -match "membershipRule") {
         Write-Host "Groups retrieved successfully."
-        $outputFile = $importDirectory + "/Groups.json"
-        
-        if (Test-Path $outputFile) {
-            Write-Host "Error: Groups.json already exists in this path."
+        $headers = @{
+            "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
         }
-        else {
-            $parsedUsers = $users | ConvertTo-Json -Depth 100
-            $parsedUsers | Out-File -FilePath $outputFile -Encoding utf8 -Force
-            $outFileLocation = (Get-Item $outputFile).FullName
-            Write-Host "Groups can be found at $outFileLocation"
-        }
-    }
-    else {
-        Write-Host "Failed to retrieve Groups."
-    }    
-}
-Function Run-Ingestion
-{
-    #Default API Target is: "http://localhost:7474"
-    #Default Neo4j version is 5.6
-    $headers = @{
-        "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
-    }
-    $cypherQuery = "WITH 'file:///ConditionalAccessPolicies.json' AS url CALL apoc.load.json(url) YIELD value AS data UNWIND data AS policy CREATE (p:Policy) SET p += policy RETURN p"
+        $groups.value | %{
 
-    $response = Invoke-RestMethod -Uri "$neo4jUrl/db/neo4j/tx/commit" -Headers $headers -Method Post -ContentType "application/json" -Body @"
+            $GroupID = $_.id.ToUpper()
+            $GroupDisplayName = $_.displayName
+        
+            $CreateGroupNodes | %{
+                #Write-Host $_ " is limited by" $CAPid
+                $query = "MERGE (g:Base {objectid:'$GroupID', displayName:'$GroupDisplayName'})"
+        
+                $response = Invoke-RestMethod `
+                -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                -Headers $headers `
+                -Method Post `
+                -ContentType "application/json" `
+                -Body @"
     {
         "statements": [
             {
-                "statement": "$cypherQuery",
+                "statement": "$query",
                 "resultDataContents": ["row"]
             }
         ]
     }
-"@
-        
+"@`
+            }
+        } 
+        #Loop through and MERGE request the relationship between the Group and the CAP
+        foreach ($ID in $groups.value.id.ToUpper())
+        {
+            $headers = @{
+                "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
+            }
+            $query = "MATCH (g:Base) WHERE g.objectid='$ID' MATCH (p:Base) WHERE p.GroupID='$ID' MERGE (p)-[:IsLimitedBy]->(g)"
+            #Write-Host $query
+        #}
+            $response = Invoke-RestMethod `
+            -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+            -Headers $headers `
+            -Method Post `
+            -ContentType "application/json" `
+            -Body @"
+{
+    "statements": [
+        {
+            "statement": "$query",
+            "resultDataContents": ["row"]
+        }
+    ]
+}
+"@`
+
+        }
+    }
 }
