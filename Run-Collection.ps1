@@ -1,9 +1,19 @@
 Function Run-Collection
 {
 <#
+.SYNOPSIS
+The MAP-CAP project is a script that allows users to gather JSON data about the Conditional Access Policies of an Azure Tenant. 
 .DESCRIPTION
 Requests data from Azure API Clients to define current Conditional Access Policies and map them in the context of the users.
 POC for Bloodhound graph mapping but for Conditional Access within Azure
+.EXAMPLE 
+Run-Collection -accessToken $accessToken
+.EXAMPLE 
+Run-Collection -beta -accessToken $accessToken
+.EXAMPLE
+ipmo ./Run-Collection.ps1
+Run-Collection -beta -neo4JPassword "PASSWORD" -neo4JUserName "Username" -accessToken $accessToken
+
 #>
 [CmdletBinding()]
 param(
