@@ -85,7 +85,10 @@ Function Test-Neo4J
     }
     else {
         $global:importDirectory = $importDirectory  # Assign value to the global variable
-        Write-Output "Saving JSON return in: $importDirectory"
+        Write-Host "JSON returns can be saved in: $importDirectory"
+        Write-Host "Make sure to set unique constraints for future ingestion"
+        Write-Host "Example: Run in Neo4j Desktop: CREATE CONSTRAINT BaseObjectID FOR (b:Base) REQUIRE b.objectid IS UNIQUE" 
+        
     }
 }
 Function Collect-CAP
@@ -125,7 +128,7 @@ Function Collect-CAP
             }
             $IncludedGroups = $_.Conditions.users.includeGroups
             $IncludedGroups | %{
-                $GroupID = $_.ToUpper
+                $GroupID = $_.ToUpper()
             }
         }
         $CreateCAPNodes | %{
@@ -202,7 +205,7 @@ Function Collect-App
             $headers = @{
                 "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
             }
-            $query = "MATCH (a:Base) WHERE a.objectid='$ID' MATCH (p:Base) WHERE p.AppID='$ID' MERGE (a)-[:THISISMYTEST]->(p)"
+            $query = "MATCH (a:Base) WHERE a.objectid='$ID' MATCH (p:Base) WHERE p.AppID='$ID' MERGE (p)-[:LimitsAccessTo]->(a)"
             #Write-Host $query
         #}
             $response = Invoke-RestMethod `
@@ -352,7 +355,7 @@ Function Collect-Groups
             $headers = @{
                 "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
             }
-            $query = "MATCH (g:Base) WHERE g.objectid='$ID' MATCH (p:Base) WHERE p.GroupID='$ID' MERGE (p)-[:IsLimitedBy]->(g)"
+            $query = "MATCH (g:Base) WHERE g.objectid='$ID' MATCH (p:Base) WHERE p.GroupID='$ID' MERGE (g)-[:IsLimitedBy]->(p)"
             #Write-Host $query
         #}
             $response = Invoke-RestMethod `
