@@ -272,11 +272,9 @@ Function Collect-CAP
             $IncludedGroups | %{
                 $GroupID = $_.ToUpper()
             }
-        }
         Write-Host -ForegroundColor magenta "Ingesting Conditional Access Policies into Neo4j."
         $CreateCAPNodes | %{
             $query = "MERGE (p:Base {objectId:'$CAPid', displayName:'$CAPDisplayName', appId:'$AppID', userId:'$UserID', groupId:'$GroupID'}) SET p:AZConditionalAccessPolicy"
-
             $response = Invoke-RestMethod `
             -Uri "http://localhost:7474/db/neo4j/tx/commit" `
             -Headers $headers `
@@ -292,6 +290,7 @@ Function Collect-CAP
         ]
     }
 "@`
+        }
         }
         # Create (:AZConditionalAccessPolicy) - [:LimitsAccessTo]->(:AZServicePrincial) All Edges
         $accessPolicies.value | %{
