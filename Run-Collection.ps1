@@ -83,10 +83,11 @@ $global:apiUrl = "https://graph.microsoft.com/"
 $global:importDirectory = $null  # Define the global variable
 # Start Calling Functions #
 Test-Neo4J
-Collect-CAP
-Collect-App
+Collect-ServicePrincipals
+#Collect-App
 Collect-Users
 Collect-Groups
+Collect-CAP
 }
 ##################################
 #endregion PRIMARY FUNCTION ######
@@ -127,11 +128,110 @@ Function Test-Neo4J
     }
     else {
         $global:importDirectory = $importDirectory  # Assign value to the global variable
-        Write-Host "JSON returns can be saved in: $importDirectory"
-        Write-Host "Make sure to set unique constraints for future ingestion"
-        Write-Host "Example: Run in Neo4j Desktop: CREATE CONSTRAINT BaseObjectID FOR (b:Base) REQUIRE b.objectid IS UNIQUE" 
+        Write-Host -ForegroundColor Cyan "Connected to Neo4j Successfully."
+        #Write-Host "JSON returns can be saved in: $importDirectory"
+        Write-Host -ForegroundColor magenta "Make sure to set unique constraints for future ingestion."
+        Write-Host -ForegroundColor magenta "Example: Run in Neo4j Desktop: CREATE CONSTRAINT BaseObjectID FOR (b:Base) REQUIRE b.objectid IS UNIQUE" 
         
     }
+}
+Function Collect-ServicePrincipals
+{
+    # Initialize headers in each function to avoid errors
+    $headers = @{
+        "Authorization" = "Bearer $accessToken"
+        "Content-Type" = "application/json"
+    }
+    # Get-AllAzureADServicePrincipals taken from Bark.ps1
+    # https://github.com/BloodHoundAD/BARK/blob/main/BARK.ps1
+    $ShowProgress = $True
+    $URI = "https://graph.microsoft.com/beta/servicePrincipals/?`$count=true"
+    $Results = $null
+    $ServicePrincipalObjects = $null
+    If ($ShowProgress) {
+        Write-Progress -Activity "Enumerating Service Principals" -Status "Initial request..."
+    }
+    do {
+        $Results = Invoke-RestMethod `
+            -Headers @{
+                Authorization = "Bearer $($accessToken)"
+                ConsistencyLevel = "eventual"
+            } `
+            -URI $URI `
+            -UseBasicParsing `
+            -Method "GET" `
+            -ContentType "application/json"
+        if ($Results.'@odata.count') {
+            $TotalServicePrincipalCount = $Results.'@odata.count'
+        }
+        if ($Results.value) {
+            $ServicePrincipalObjects += $Results.value
+        } else {
+            $ServicePrincipalObjects += $Results
+        }
+        $uri = $Results.'@odata.nextlink'
+        If ($ShowProgress) {
+            $PercentComplete = ([Int32](($ServicePrincipalObjects.count/$TotalServicePrincipalCount)*100))
+            Write-Progress -Activity "Enumerating Service Principals" -Status "$($PercentComplete)% complete [$($ServicePrincipalObjects.count) of $($TotalServicePrincipalCount)]" -PercentComplete $PercentComplete
+        }
+    } until (!($uri))
+    Write-Host -ForegroundColor Cyan "Service Principal objects retrieved successfully."
+    $headers = @{
+        "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
+    }
+    #Ingest SP into Neo4j nodes
+    Write-Host -ForegroundColor magenta "Now ingesting Service Principal objects into Neo4j as nodes."
+    Write-Host -ForegroundColor magenta "This may take up to several min."
+    $ServicePrincipalObjects | %{
+        $SPObjectID = $_.id.ToUpper()
+        $SPAppID = $_.appId.ToUpper()
+        $SPDisplayName = $_.displayName
+        $CreateSPNodes | %{
+                $query = "MERGE (sp:Base {appId:'$SPAppID', displayName:'$SPDisplayName', objectId:'$SPObjectID'}) SET sp:AZServicePrincipal"
+                $response = Invoke-RestMethod `
+                -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                -Headers $headers `
+                -Method Post `
+                -ContentType "application/json" `
+                -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
+    }
+"@`
+            }
+        } 
+        #Loop through and MERGE request the relationship between the CAP and the APP
+        Write-Host -ForegroundColor magenta "Creating relationships between Service Principals and the conditional access policies."
+        foreach ($ID in $ServicePrincipalObjects.id.ToUpper())
+        {
+            $headers = @{
+                "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
+            }
+            $query = "MATCH (sp:Base) WHERE sp.appId='$ID' MATCH (p:Base) WHERE p.appId='$ID' MERGE (p)-[:LimitsAccessTo]->(sp)"
+            #Write-Host $query
+        #}
+            $response = Invoke-RestMethod `
+            -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+            -Headers $headers `
+            -Method Post `
+            -ContentType "application/json" `
+            -Body @"
+{
+    "statements": [
+        {
+            "statement": "$query",
+            "resultDataContents": ["row"]
+        }
+    ]
+}
+"@`
+
+        }
 }
 Function Collect-CAP
 {   
@@ -150,7 +250,7 @@ Function Collect-CAP
     }
     $accessPolicies = Invoke-RestMethod -Uri $apiTarget -Headers $headers -Method Get
     if ($accessPolicies -and $accessPolicies.value -match "conditions") {
-        Write-Host "Conditional Access Policies retrieved successfully."
+        Write-Host -ForegroundColor Cyan "Conditional Access Policies retrieved successfully."
         $headers = @{
             "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
         }
@@ -173,8 +273,9 @@ Function Collect-CAP
                 $GroupID = $_.ToUpper()
             }
         }
+        Write-Host -ForegroundColor magenta "Ingesting Conditional Access Policies into Neo4j."
         $CreateCAPNodes | %{
-            $query = "MERGE (p:Base {objectid:'$CAPid', displayName:'$CAPDisplayName', AppID:'$AppID', UserID:'$UserID', GroupID:'$GroupID'})"
+            $query = "MERGE (p:Base {objectId:'$CAPid', displayName:'$CAPDisplayName', appId:'$AppID', userId:'$UserID', groupId:'$GroupID'}) SET p:AZConditionalAccessPolicy"
 
             $response = Invoke-RestMethod `
             -Uri "http://localhost:7474/db/neo4j/tx/commit" `
@@ -191,10 +292,150 @@ Function Collect-CAP
         ]
     }
 "@`
+        }
+        # Create (:AZConditionalAccessPolicy) - [:LimitsAccessTo]->(:AZServicePrincial) All Edges
+        $accessPolicies.value | %{
+            $CAPid = $_.id.ToUpper()
+            $IncludedApplications = $_.Conditions.applications.includeApplications
+            ForEach ($IncludedApplication In $IncludedApplications) {
+                if ($IncludedApplication -Match "All") {
+                    Write-Host -ForegroundColor Green "Creating edge: ('$CAPid':AZConditionalAccessPolicy) - [:LimitsAccessTo]->(ALL:AZServicePrincial) for All service principals and applications."
+                    $query = "MATCH (p:Base {objectId:'$CAPid'}) MATCH (sp:AZServicePrincipal) MERGE (p)-[:LimitsAccessTo]->(sp)"
+                    $response = Invoke-RestMethod `
+                    -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                    -Headers $headers `
+                    -Method Post `
+                    -ContentType "application/json" `
+                    -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
     }
+"@`
+        } else {
+            $AppId = $IncludedApplication.ToUpper()
+            Write-Host -ForegroundColor magenta "Creating edge ('$CAPid':AZConditionalAccessPolicy) - [:LimitsAccessTo]->('$AppId':AZServicePrincial)"
+            $query = "MATCH (p:Base {objectId:'$CAPid'}) MATCH (sp:AZServicePrincipal {appId:'$AppId'}) MERGE (p)-[:LimitsAccessTo]-> (sp)"
+                    $response = Invoke-RestMethod `
+                    -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                    -Headers $headers `
+                    -Method Post `
+                    -ContentType "application/json" `
+                    -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
+    }
+"@`
+                }
+        
+            }
+        }
+        # Create (:AZUser) - [:LimitedBy]->(:AZConditionalAccessPolicy) All Edges
+        $accessPolicies.value | %{
+            $CAPid = $_.id.ToUpper()
+            $IncludedUsers = $_.Conditions.users.includeUsers
+            ForEach ($IncludedUser In $IncludedUsers) {
+                if ($IncludedUser -Match "All") {
+                    Write-Host -ForegroundColor Green "Creating edge (:AZUser) - [:LimitedBy]->('$CAPid':AZConditionalAccessPolicy) for All users"
+                    $query = "MATCH (p:Base {objectId:'$CAPid'}) MATCH (u:AZUser) MERGE (u)-[:LimitedBy]->(p)"
+                    $response = Invoke-RestMethod `
+                    -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                    -Headers $headers `
+                    -Method Post `
+                    -ContentType "application/json" `
+                    -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
+    }
+"@`
+        } else {
+            $UserId = $IncludedUser.ToUpper()
+            Write-Host -ForegroundColor magenta "Creating edge ('$UserId':AZUser) - [:LimitedBy]->('$CAPid':AZConditionalAccessPolicy) for specific users"
+            $query = "MATCH (p:Base {objectId:'$CAPid'}) MATCH (u:AZUser {userId:'$UserId'}) MERGE (u)-[:LimitedBy]-> (p)"
+                    $response = Invoke-RestMethod `
+                    -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                    -Headers $headers `
+                    -Method Post `
+                    -ContentType "application/json" `
+                    -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
+    }
+"@`
+                }
+        
+                }
+            }
+            # Create (:AZGroup) - [:LimitedBy]->(:AZConditionalAccessPolicy) All Edges
+        $accessPolicies.value | %{
+            $CAPid = $_.id.ToUpper()
+            $IncludedGroups = $_.Conditions.users.includeGroups
+            ForEach ($IncludedGroup In $IncludedGroups) {
+                if ($IncludedGroup -Match "All") {
+                    Write-Host -ForegroundColor Green "Creating edge (:AZGroup) - [:LimitedBy]->('$CAPid':AZConditionalAccessPolicy) for All groups"
+                    $query = "MATCH (p:Base {objectId:'$CAPid'}) MATCH (g:AZGroup) MERGE (g)-[:LimitedBy]->(p)"
+                    $response = Invoke-RestMethod `
+                    -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                    -Headers $headers `
+                    -Method Post `
+                    -ContentType "application/json" `
+                    -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
+    }
+"@`
+        } else {
+            Write-Host -ForegroundColor magenta "Creating edge ('$GroupId':AZGroup) - [:LimitedBy]->('$CAPid':AZConditionalAccessPolicy) for specific groups"
+            $GroupId = $IncludedGroup.ToUpper()
+            $query = "MATCH (p:Base {objectId:'$CAPid'}) MATCH (g:AZGroup {groupId:'$GroupId'}) MERGE (g)-[:LimitedBy]-> (p)"
+                    $response = Invoke-RestMethod `
+                    -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                    -Headers $headers `
+                    -Method Post `
+                    -ContentType "application/json" `
+                    -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
+    }
+"@`
+                }
+        
+                }
+            }
+
+        }
+
 }
-}
-Function Collect-App
+<# Function Collect-App
 {
     # Initialize headers in each function to avoid errors
     $headers = @{
@@ -217,12 +458,12 @@ Function Collect-App
         }
         $applications.value | %{
 
-            $ApplicationID = $_.appid.ToUpper()
+            $ApplicationID = $_.id.ToUpper()
+            $ApplicationAppID = $_.appid.ToUpper()
             $AppDisplayName = $_.displayName
         
             $CreateAppNodes | %{
-                #Write-Host $_ " is limited by" $CAPid
-                $query = "MERGE (a:Base {objectid:'$ApplicationID', displayName:'$AppDisplayName'})"
+                $query = "MERGE (a:Base {objectId:'$ApplicationID', appId:'$ApplicationAppID', displayName:'$AppDisplayName'}) SET a:AZApplication"
         
                 $response = Invoke-RestMethod `
                 -Uri "http://localhost:7474/db/neo4j/tx/commit" `
@@ -247,7 +488,7 @@ Function Collect-App
             $headers = @{
                 "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
             }
-            $query = "MATCH (a:Base) WHERE a.objectid='$ID' MATCH (p:Base) WHERE p.AppID='$ID' MERGE (p)-[:LimitsAccessTo]->(a)"
+            $query = "MATCH (a:Base) WHERE a.objectId='$ID' MATCH (p:Base) WHERE p.appId='$ID' MERGE (p)-[:LimitsAccessTo]->(a)"
             #Write-Host $query
         #}
             $response = Invoke-RestMethod `
@@ -268,7 +509,7 @@ Function Collect-App
 
         }
     }
-}
+} #>
 Function Collect-Users
 {
     # Initialize headers in each function to avoid errors
@@ -286,10 +527,11 @@ Function Collect-Users
     }
     $users = Invoke-RestMethod -Uri $apiTarget -Headers $headers -Method Get
     if ($users -and $users.value -match "accountEnabled") {
-        Write-Host "Users retrieved successfully."
+        Write-Host -ForegroundColor Cyan "Users retrieved successfully."
         $headers = @{
             "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
         }
+        Write-Host -ForegroundColor magenta "Ingesting users into Neo4j."
         $users.value | %{
 
             $UserID = $_.id.ToUpper()
@@ -297,7 +539,7 @@ Function Collect-Users
         
             $CreateUserNodes | %{
                 #Write-Host $_ " is limited by" $CAPid
-                $query = "MERGE (u:Base {objectid:'$UserID', displayName:'$UserDisplayName'})"
+                $query = "MERGE (u:Base {objectId:'$UserID', displayName:'$UserDisplayName'}) SET u:AZUser"
         
                 $response = Invoke-RestMethod `
                 -Uri "http://localhost:7474/db/neo4j/tx/commit" `
@@ -317,12 +559,13 @@ Function Collect-Users
             }
         } 
         #Loop through and MERGE request the relationship between the CAP and the APP
+        
         foreach ($ID in $users.value.id.ToUpper())
         {
             $headers = @{
                 "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
             }
-            $query = "MATCH (u:Base) WHERE u.objectid='$ID' MATCH (p:Base) WHERE p.UserID='$ID' MERGE (u)-[:IsLimitedBy]->(p)"
+            $query = "MATCH (u:Base) WHERE u.objectId='$ID' MATCH (p:Base) WHERE p.userId='$ID' MERGE (u)-[:IsLimitedBy]->(p)"
             #Write-Host $query
         #}
             $response = Invoke-RestMethod `
@@ -361,10 +604,11 @@ Function Collect-Groups
     }
     $groups = Invoke-RestMethod -Uri $apiTarget -Headers $headers -Method Get
     if ($groups -and $groups.value -match "membershipRule") {
-        Write-Host "Groups retrieved successfully."
+        Write-Host -ForegroundColor Cyan "Groups retrieved successfully."
         $headers = @{
             "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
         }
+        Write-Host -ForegroundColor magenta "Ingesting groups into Neo4j."
         $groups.value | %{
 
             $GroupID = $_.id.ToUpper()
@@ -372,7 +616,7 @@ Function Collect-Groups
         
             $CreateGroupNodes | %{
                 #Write-Host $_ " is limited by" $CAPid
-                $query = "MERGE (g:Base {objectid:'$GroupID', displayName:'$GroupDisplayName'})"
+                $query = "MERGE (g:Base {objectId:'$GroupID', displayName:'$GroupDisplayName'}) SET g:AZGroup"
         
                 $response = Invoke-RestMethod `
                 -Uri "http://localhost:7474/db/neo4j/tx/commit" `
@@ -397,7 +641,7 @@ Function Collect-Groups
             $headers = @{
                 "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
             }
-            $query = "MATCH (g:Base) WHERE g.objectid='$ID' MATCH (p:Base) WHERE p.GroupID='$ID' MERGE (g)-[:IsLimitedBy]->(p)"
+            $query = "MATCH (g:Base) WHERE g.objectId='$ID' MATCH (p:Base) WHERE p.groupId='$ID' MERGE (g)-[:IsLimitedBy]->(p)"
             #Write-Host $query
         #}
             $response = Invoke-RestMethod `
@@ -417,5 +661,5 @@ Function Collect-Groups
 "@`
 
         }
-    }
+    } 
 }
