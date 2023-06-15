@@ -365,7 +365,7 @@ Function Collect-CAP
         } else {
             $UserId = $IncludedUser.ToUpper()
             Write-Host -ForegroundColor magenta "Creating edge ('$UserId':AZUser) - [:LimitedBy]->('$CAPid':AZConditionalAccessPolicy) for specific users"
-            $query = "MATCH (p:Base {objectId:'$CAPid'}) MATCH (u:AZUser {userId:'$UserId'}) MERGE (u)-[:LimitedBy]-> (p)"
+            $query = "MATCH (p:Base {objectId:'$CAPid'}) MATCH (u:AZUser {userId:'$UserId'}) MERGE (u)-[:LimitedBy]->(p)"
                     $response = Invoke-RestMethod `
                     -Uri "http://localhost:7474/db/neo4j/tx/commit" `
                     -Headers $headers `
@@ -411,7 +411,7 @@ Function Collect-CAP
         } else {
             Write-Host -ForegroundColor magenta "Creating edge ('$GroupId':AZGroup) - [:LimitedBy]->('$CAPid':AZConditionalAccessPolicy) for specific groups"
             $GroupId = $IncludedGroup.ToUpper()
-            $query = "MATCH (p:Base {objectId:'$CAPid'}) MATCH (g:AZGroup {groupId:'$GroupId'}) MERGE (g)-[:LimitedBy]-> (p)"
+            $query = "MATCH (p:Base {objectId:'$CAPid'}) MATCH (g:AZGroup {groupId:'$GroupId'}) MERGE (g)-[:LimitedBy]->(p)"
                     $response = Invoke-RestMethod `
                     -Uri "http://localhost:7474/db/neo4j/tx/commit" `
                     -Headers $headers `
@@ -539,7 +539,7 @@ Function Collect-Users
         
             $CreateUserNodes | %{
                 #Write-Host $_ " is limited by" $CAPid
-                $query = "MERGE (u:Base {objectId:'$UserID', displayName:'$UserDisplayName'}) SET u:AZUser"
+                $query = "MERGE (u:Base {userId:'$UserID', displayName:'$UserDisplayName'}) SET u:AZUser"
         
                 $response = Invoke-RestMethod `
                 -Uri "http://localhost:7474/db/neo4j/tx/commit" `
@@ -560,12 +560,12 @@ Function Collect-Users
         } 
         #Loop through and MERGE request the relationship between the CAP and the APP
         
-        foreach ($ID in $users.value.id.ToUpper())
+<#         foreach ($ID in $users.value.id.ToUpper())
         {
             $headers = @{
                 "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
             }
-            $query = "MATCH (u:Base) WHERE u.objectId='$ID' MATCH (p:Base) WHERE p.userId='$ID' MERGE (u)-[:IsLimitedBy]->(p)"
+            $query = "MATCH (u:Base) WHERE u.userId='$ID' MATCH (p:Base) WHERE p.userId='$ID' MERGE (u)-[:IsLimitedBy]->(p)"
             #Write-Host $query
         #}
             $response = Invoke-RestMethod `
@@ -584,7 +584,7 @@ Function Collect-Users
 }
 "@`
 
-        }
+        } #>
     }
 }
 Function Collect-Groups
@@ -616,7 +616,7 @@ Function Collect-Groups
         
             $CreateGroupNodes | %{
                 #Write-Host $_ " is limited by" $CAPid
-                $query = "MERGE (g:Base {objectId:'$GroupID', displayName:'$GroupDisplayName'}) SET g:AZGroup"
+                $query = "MERGE (g:Base {groupId:'$GroupID', displayName:'$GroupDisplayName'}) SET g:AZGroup"
         
                 $response = Invoke-RestMethod `
                 -Uri "http://localhost:7474/db/neo4j/tx/commit" `
@@ -636,12 +636,12 @@ Function Collect-Groups
             }
         } 
         #Loop through and MERGE request the relationship between the Group and the CAP
-        foreach ($ID in $groups.value.id.ToUpper())
+<#         foreach ($ID in $groups.value.id.ToUpper())
         {
             $headers = @{
                 "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
             }
-            $query = "MATCH (g:Base) WHERE g.objectId='$ID' MATCH (p:Base) WHERE p.groupId='$ID' MERGE (g)-[:IsLimitedBy]->(p)"
+            $query = "MATCH (g:Base) WHERE g.group='$ID' MATCH (p:Base) WHERE p.groupId='$ID' MERGE (g)-[:IsLimitedBy]->(p)"
             #Write-Host $query
         #}
             $response = Invoke-RestMethod `
@@ -660,6 +660,6 @@ Function Collect-Groups
 }
 "@`
 
-        }
+        } #>
     } 
 }
