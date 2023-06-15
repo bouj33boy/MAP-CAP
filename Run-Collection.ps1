@@ -254,6 +254,7 @@ Function Collect-CAP
         $headers = @{
             "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
         }
+        Write-Host -ForegroundColor magenta "Ingesting Conditional Access Policies into Neo4j."
         $accessPolicies.value | %{
 
             $CAPid = $_.id.ToUpper()
@@ -272,7 +273,7 @@ Function Collect-CAP
             $IncludedGroups | %{
                 $GroupID = $_.ToUpper()
             }
-        Write-Host -ForegroundColor magenta "Ingesting Conditional Access Policies into Neo4j."
+        
         $CreateCAPNodes | %{
             $query = "MERGE (p:Base {objectId:'$CAPid', displayName:'$CAPDisplayName', appId:'$AppID', userId:'$UserID', groupId:'$GroupID'}) SET p:AZConditionalAccessPolicy"
             $response = Invoke-RestMethod `
