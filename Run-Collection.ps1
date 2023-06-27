@@ -84,7 +84,6 @@ $global:importDirectory = $null  # Define the global variable
 # Start Calling Functions #
 Test-Neo4J
 Collect-ServicePrincipals
-#Collect-App
 Collect-Users
 Collect-Groups
 Collect-CAP
@@ -435,81 +434,6 @@ Function Collect-CAP
         }
 
 }
-<# Function Collect-App
-{
-    # Initialize headers in each function to avoid errors
-    $headers = @{
-        "Authorization" = "Bearer $accessToken"
-        "Content-Type" = "application/json"
-    }
-    $apiUrlApp = "v1.0/applications"
-    $betaUrlApp = "beta/applications"
-    $apiTarget = if ($beta) 
-    { 
-        $apiUrl + $betaUrlApp 
-    } else { 
-        $apiUrl + $apiUrlApp 
-    }
-    $applications = Invoke-RestMethod -Uri $apiTarget -Headers $headers -Method Get
-    if ($applications -and $applications.value -match "appRoles") {
-        Write-Host "Applications retrieved successfully."
-        $headers = @{
-            "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
-        }
-        $applications.value | %{
-
-            $ApplicationID = $_.id.ToUpper()
-            $ApplicationAppID = $_.appid.ToUpper()
-            $AppDisplayName = $_.displayName
-        
-            $CreateAppNodes | %{
-                $query = "MERGE (a:Base {objectId:'$ApplicationID', appId:'$ApplicationAppID', displayName:'$AppDisplayName'}) SET a:AZApplication"
-        
-                $response = Invoke-RestMethod `
-                -Uri "http://localhost:7474/db/neo4j/tx/commit" `
-                -Headers $headers `
-                -Method Post `
-                -ContentType "application/json" `
-                -Body @"
-    {
-        "statements": [
-            {
-                "statement": "$query",
-                "resultDataContents": ["row"]
-            }
-        ]
-    }
-"@`
-            }
-        } 
-        #Loop through and MERGE request the relationship between the CAP and the APP
-        foreach ($ID in $applications.value.appid.ToUpper())
-        {
-            $headers = @{
-                "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
-            }
-            $query = "MATCH (a:Base) WHERE a.objectId='$ID' MATCH (p:Base) WHERE p.appId='$ID' MERGE (p)-[:LimitsAccessTo]->(a)"
-            #Write-Host $query
-        #}
-            $response = Invoke-RestMethod `
-            -Uri "http://localhost:7474/db/neo4j/tx/commit" `
-            -Headers $headers `
-            -Method Post `
-            -ContentType "application/json" `
-            -Body @"
-{
-    "statements": [
-        {
-            "statement": "$query",
-            "resultDataContents": ["row"]
-        }
-    ]
-}
-"@`
-
-        }
-    }
-} #>
 Function Collect-Users
 {
     # Initialize headers in each function to avoid errors
@@ -558,33 +482,6 @@ Function Collect-Users
 "@`
             }
         } 
-        #Loop through and MERGE request the relationship between the CAP and the APP
-        
-<#         foreach ($ID in $users.value.id.ToUpper())
-        {
-            $headers = @{
-                "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
-            }
-            $query = "MATCH (u:Base) WHERE u.userId='$ID' MATCH (p:Base) WHERE p.userId='$ID' MERGE (u)-[:IsLimitedBy]->(p)"
-            #Write-Host $query
-        #}
-            $response = Invoke-RestMethod `
-            -Uri "http://localhost:7474/db/neo4j/tx/commit" `
-            -Headers $headers `
-            -Method Post `
-            -ContentType "application/json" `
-            -Body @"
-{
-    "statements": [
-        {
-            "statement": "$query",
-            "resultDataContents": ["row"]
-        }
-    ]
-}
-"@`
-
-        } #>
     }
 }
 Function Collect-Groups
@@ -635,31 +532,5 @@ Function Collect-Groups
 "@`
             }
         } 
-        #Loop through and MERGE request the relationship between the Group and the CAP
-<#         foreach ($ID in $groups.value.id.ToUpper())
-        {
-            $headers = @{
-                "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
-            }
-            $query = "MATCH (g:Base) WHERE g.group='$ID' MATCH (p:Base) WHERE p.groupId='$ID' MERGE (g)-[:IsLimitedBy]->(p)"
-            #Write-Host $query
-        #}
-            $response = Invoke-RestMethod `
-            -Uri "http://localhost:7474/db/neo4j/tx/commit" `
-            -Headers $headers `
-            -Method Post `
-            -ContentType "application/json" `
-            -Body @"
-{
-    "statements": [
-        {
-            "statement": "$query",
-            "resultDataContents": ["row"]
-        }
-    ]
-}
-"@`
-
-        } #>
     } 
 }
