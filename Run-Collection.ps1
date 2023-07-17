@@ -84,9 +84,13 @@ $global:importDirectory = $null  # Define the global variable
 # Start Calling Functions #
 Test-Neo4J
 Collect-ServicePrincipals
-Collect-Users
 Collect-Groups
+Collect-Users
 Collect-CAP
+Write-Host -ForegroundColor green "Collection Complete. You should now be able to view data in Neo4J database."
+Write-Host -ForegroundColor green "Try running the following in Neo4J Desktop:"
+Write-Host -ForegroundColor white "MATCH POC = (u)-[:LimitedBy]->[p]"
+Write-Host -ForegroundColor DarkMagenta "Now that you collected the elements, identify subversions with Get-CAPSubversionRecipe.ps1"
 }
 ##################################
 #endregion PRIMARY FUNCTION ######
@@ -234,6 +238,10 @@ Function Collect-ServicePrincipals
 }
 Function Collect-CAP
 {   
+    # Setting errorActionPreference because each CAP is set a little bit differently and we want to avoid $null value errors where conditions are not set
+    #############################################
+    $ErrorActionPreference = 'SilentlyContinue'##
+    #####Comment This Out If To Troubleshoot#####
     # Initialize headers in each function to avoid errors
     $headers = @{
         "Authorization" = "Bearer $accessToken"
@@ -258,6 +266,7 @@ Function Collect-CAP
 
             $CAPid = $_.id.ToUpper()
             $CAPDisplayName = $_.displayName
+            $CAPState = $_.state
             $IncludedApplications = $_.Conditions.applications.includeApplications
             $IncludedApplications | %{
                 #Write-Host $_ "access is limited by" $CAPid
@@ -268,13 +277,39 @@ Function Collect-CAP
                 #Write-Host $_ " is limited by" $CAPid
                 $UserID = $_.ToUpper()
             }
+            $ExcludedUsers = $_.Conditions.users.excludeUsers
+            $ExcludedUsers | %{
+                $ExcludedUsersID = $_.ToUpper()
+            }
             $IncludedGroups = $_.Conditions.users.includeGroups
             $IncludedGroups | %{
                 $GroupID = $_.ToUpper()
             }
-        
+            $ExcludedGroups = $_.Conditions.users.excludeGroups
+            $ExcludedGroups | %{
+                $ExcludeGroupID = $_.ToUpper()
+            }
+            $enforcementAction = $_.grantControls.builtInControls
+            $IncludedLocations = $_.Conditions.locations.includeLocations
+            $IncludedLocations | %{
+                $LocationID = $_.ToUpper()
+            }
+            $IncludedUserActions = $_.Conditions.applications.includeUserAction
+            $DisabledResilience = $_.sessionControls.disableResilienceDefaults
+            #Need to research this one ^
+            $AppEnforcedRestrictions = $_.sessionControls.applicationEnforcedRestrictions
+            $PersistentBrowser = $_.sessionControls.persistentBrowser
+            $CloudAppSec = $_.sessionControls.cloudAppSecurity
+            $SignInFrequency = $_.sessionControls.signInFrequency
+            $CAE = $_.sessionControls.continuousAccessEvaluation
+            $SecureSignIn = $_.sessionControls.secureSignInSession
+            $DeviceControls = $_.Conditions.devices.deviceFilter.mode
+            $DeviceControlsRule = $_.Conditions.devices.deviceFilter.rule
+            $UserRiskLevel = $_.Conditions.userRiskLevels
+            $IncludedPlatforms = $_.Conditions.platforms.includePlatforms
+
         $CreateCAPNodes | %{
-            $query = "MERGE (p:Base {objectId:'$CAPid', displayName:'$CAPDisplayName', appId:'$AppID', userId:'$UserID', groupId:'$GroupID'}) SET p:AZConditionalAccessPolicy"
+            $query = "MERGE (p:Base {objectId:'$CAPid', displayName:'$CAPDisplayName', state:'$CAPState',appId:'$AppID', userId:'$UserID', excludedUserId:'$ExcludedUsersID', groupId:'$GroupID', excludedGroupId:'$ExcludeGroupID', enforcementAction:'$enforcementAction', locations:'$LocationID', includedUserActions:'$IncludedUserActions', disabledResilience:'$DisabledResilience', appEnforcedRestrictions:'$AppEnforcedRestrictions', persistentBrowser:'$PersistentBrowser', cloudAppSec:'$CloudAppSec', signInFrequency:'$SignInFrequency', continuousAccessEvaluation:'$CAE', secureSignIn:'$SecureSignIn', deviceControlsEnabled:'$DeviceControls', deviceControlsRule:'$DeviceControlsRule', userRiskLevel:'$UserRiskLevel', platforms:'$IncludedPlatforms'}) SET p:AZConditionalAccessPolicy"
             $response = Invoke-RestMethod `
             -Uri "http://localhost:7474/db/neo4j/tx/commit" `
             -Headers $headers `
@@ -441,30 +476,56 @@ Function Collect-Users
         "Authorization" = "Bearer $accessToken"
         "Content-Type" = "application/json"
     }
-    $apiUrlUsers = "v1.0/users"
-    $betaUrlUsers = "beta/users"
+    $apiUrlUsers = "v1.0/users/?`$count=true"
+    $betaUrlUsers = "beta/users/?`$count=true"
     $apiTarget = if ($beta) 
     { 
         $apiUrl + $betaUrlUsers 
     } else { 
         $apiUrl + $apiUrlUsers 
     }
-    $users = Invoke-RestMethod -Uri $apiTarget -Headers $headers -Method Get
-    if ($users -and $users.value -match "accountEnabled") {
+    $uri = $apiTarget
+    $ShowProgress = $True
+    $Results = $null
+    $UserObjects = $null
+    If ($ShowProgress) {
+        Write-Progress -Activity "Enumerating Users" -Status "Initial request..."
+    }
+    do {
+        $Results = Invoke-RestMethod `
+        -Headers @{
+            Authorization = "Bearer $($accessToken)"
+            ConsistencyLevel = "eventual"
+        } `
+        -URI $uri `
+        -UseBasicParsing `
+        -Method "GET" `
+        -ContentType "application/json"
+    if ($Results.'@odata.count') {
+        $TotalUserCount = $Results.'@odata.count'
+    }
+    if ($Results.value) {
+        $UserObjects += $Results.value
+    } else {
+        $UserObjects += $Results
+    }
+    $uri = $Results.'@odata.nextlink'
+    If ($ShowProgress) {
+        $PercentComplete = ([Int32](($UserObjects.count/$TotalUserCount)*100))
+        Write-Progress -Activity "Enumerating Users" -Status "$($PercentComplete)% complete [$($UserObjects.count) of $($TotalUserCount)]" -PercentComplete $PercentComplete
+    }
+    } until (!($uri))
+    $headers = @{
+        "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
+    }
+    if ($UserObjects) {
         Write-Host -ForegroundColor Cyan "Users retrieved successfully."
-        $headers = @{
-            "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
-        }
         Write-Host -ForegroundColor magenta "Ingesting users into Neo4j."
-        $users.value | %{
-
+        $UserObjects | %{
             $UserID = $_.id.ToUpper()
-            $UserDisplayName = $_.displayName
-        
+            $UserDisplayName = $_.displayName  
             $CreateUserNodes | %{
-                #Write-Host $_ " is limited by" $CAPid
-                $query = "MERGE (u:Base {userId:'$UserID', displayName:'$UserDisplayName'}) SET u:AZUser"
-        
+                $query = "MERGE (u:Base {userId:'$UserID', displayName:'$UserDisplayName'}) SET u:AZUser"        
                 $response = Invoke-RestMethod `
                 -Uri "http://localhost:7474/db/neo4j/tx/commit" `
                 -Headers $headers `
@@ -481,8 +542,56 @@ Function Collect-Users
     }
 "@`
             }
-        } 
-    }
+        }
+                $usersCount = $UserObjects.id.Count
+                for ($i = 0; $i -lt $usersCount; $i++) {
+                    if ($i -gt $usersCount) {
+                        Write-Host "Exceeded expected number of users, breaking loop."
+                        break
+                    }
+                    $user = $UserObjects[$i]
+                    $UserID = $user.id.ToUpper()
+                    $headers = @{
+                        "Authorization" = "Bearer $accessToken"
+                        "Content-Type" = "application/json"
+                    }
+                    $CheckMembersAPI = "https://graph.microsoft.com/v1.0/users/$UserID/checkMemberGroups"
+                    foreach ($group in $groupArrays){
+                        $groupIds = $group 
+                        $body = @{
+                            "groupIds" = $groupIds
+                        } | ConvertTo-Json
+                        $CheckMemberResponse = Invoke-RestMethod -Method POST -Uri $CheckMembersAPI -Headers $headers -Body $body
+                        $GroupIDs = $CheckMemberResponse.value
+                        If ($GroupIDs) {
+                            foreach ($g in $GroupIDs){
+                                $groupID = $g.ToUpper()
+                                $headersNeo4j = @{
+                                    "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
+                                }
+                                $query = "MATCH (g:AZGroup {groupId:'$groupID'}) MATCH (u:AZUser {userId:'$UserId'}) MERGE (u)-[:MemberOf]->(g)"       
+                $response = Invoke-RestMethod `
+                -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                -Headers $headersNeo4j `
+                -Method Post `
+                -ContentType "application/json" `
+                -Body @"
+{
+    "statements": [
+        {
+            "statement": "$query",
+            "resultDataContents": ["row"]
+        }
+    ]
+}
+"@
+                        }
+                    }
+                }
+                # Update the progress bar
+                Write-Progress -Activity "Creating edges between users and groups" -Status "Processing user $i of $usersCount" -PercentComplete (($i / $usersCount) * 100)
+            }
+        }     
 }
 Function Collect-Groups
 {
@@ -499,22 +608,48 @@ Function Collect-Groups
     } else { 
         $apiUrl + $apiUrlGroups 
     }
-    $groups = Invoke-RestMethod -Uri $apiTarget -Headers $headers -Method Get
-    if ($groups -and $groups.value -match "membershipRule") {
+    $uri = $apiTarget
+    $ShowProgress = $True
+    $Resulsts = $null
+    $GroupObjects = $null
+    If ($ShowProgress){
+        do {
+            $Results = Invoke-RestMethod `
+                -Headers @{
+                    Authorization = "Bearer $($accessToken)"
+                    ConsistencyLevel = "eventual"
+                } `
+                -URI $uri `
+                -UseBasicParsing `
+                -Method "GET" `
+                -ContentType "application/json"
+            if ($Results.'@odata.count') {
+                $TotalGroupsCount = $Results.'@odata.count'
+            }
+            if ($Results.value) {
+                $GroupObjects += $Results.value
+            } else {
+                $GroupObjects += $Results
+            }
+            $uri = $Results.'@odata.nextlink'
+            If ($ShowProgress) {
+                $PercentComplete = ([Int32](($GroupObjects.count/$TotalGroupsCount)*100))
+                Write-Progress -Activity "Enumerating Groups" -Status "$($PercentComplete)% complete [$($GroupObjects.count) of $($TotalGroupsCount)]" -PercentComplete $PercentComplete
+            }
+        } until (!($uri))
+    if ($GroupObjects -and $GroupObjects -match "membershipRule") {
         Write-Host -ForegroundColor Cyan "Groups retrieved successfully."
         $headers = @{
             "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
         }
         Write-Host -ForegroundColor magenta "Ingesting groups into Neo4j."
-        $groups.value | %{
+        $GroupObjects | %{
 
             $GroupID = $_.id.ToUpper()
             $GroupDisplayName = $_.displayName
-        
             $CreateGroupNodes | %{
                 #Write-Host $_ " is limited by" $CAPid
                 $query = "MERGE (g:Base {groupId:'$GroupID', displayName:'$GroupDisplayName'}) SET g:AZGroup"
-        
                 $response = Invoke-RestMethod `
                 -Uri "http://localhost:7474/db/neo4j/tx/commit" `
                 -Headers $headers `
@@ -531,6 +666,21 @@ Function Collect-Groups
     }
 "@`
             }
+        # Creating array from which to compare user relationships
+        $groupArray = $GroupObjects.id
+        # Create a global variable to hold the groups
+        $global:groupArrays = New-Object System.Collections.ArrayList
+        if ($groupArray.count -gt 20) {
+            # Calculate the number of groups (as per Microsoft, can't be gt 20)
+            $groupIdCount = [math]::Ceiling($groupArray.count / 20)
+            for ($i = 0; $i -lt $groupIdCount; $i++) {
+                # Get the subsets of 20 group Ids from the groupArray
+                $subsetId = $groupArray | Select-Object -Skip ($i * 20) -First 20
+                $global:groupArrays.Add($subsetId) | Out-Null 
+            }
+
+        } 
         } 
     } 
+}
 }
