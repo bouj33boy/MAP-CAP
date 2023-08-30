@@ -21,7 +21,7 @@ Run-Collection -beta -accessToken $accessToken
 
 .EXAMPLE
 ipmo ./Run-Collection.ps1
-Run-Collection -beta -neo4JPassword "PASSWORD" -neo4JUserName "Username" -accessToken $accessToken
+Run-Collection -beta -neo4JPassword "PASSWORD" -neo4JUserName "USERNAME" -accessToken $accessToken
 
 .PARAMETER accessToken
 This is the bearer access token granted by your Azure tenant upon successful authentication. 
@@ -89,7 +89,7 @@ Collect-Users
 Collect-CAP
 Write-Host -ForegroundColor green "Collection Complete. You should now be able to view data in Neo4J database."
 Write-Host -ForegroundColor green "Try running the following in Neo4J Desktop:"
-Write-Host -ForegroundColor white "MATCH POC = (u)-[:LimitedBy]->[p]"
+Write-Host -ForegroundColor white "MATCH POC = (u)-[:LimitedBy]->(p) RETURN POC"
 Write-Host -ForegroundColor DarkMagenta "Now that you collected the elements, identify subversions with Get-CAPSubversionRecipe.ps1"
 }
 ##################################

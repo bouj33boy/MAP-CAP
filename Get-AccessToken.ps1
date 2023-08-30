@@ -43,3 +43,131 @@ $headers = @{
     "Content-Type" = "application/json"
 }
 }
+
+------
+Function Collect-ServicePrincipals
+{
+    # Initialize headers in each function to avoid errors
+    $headers = @{
+        "Authorization" = "Bearer $accessToken"
+        "Content-Type" = "application/json"
+    }
+    # Get-AllAzureADServicePrincipals taken from Bark.ps1
+    # https://github.com/BloodHoundAD/BARK/blob/main/BARK.ps1
+    $ShowProgress = $True
+    $URI = "https://graph.microsoft.com/beta/servicePrincipals/?`$count=true"
+    $Results = $null
+    $ServicePrincipalObjects = $null
+    If ($ShowProgress) {
+        Write-Progress -Activity "Enumerating Service Principals" -Status "Initial request..."
+    }
+    do {
+        $Results = Invoke-RestMethod `
+            -Headers @{
+                Authorization = "Bearer $($accessToken)"
+                ConsistencyLevel = "eventual"
+            } `
+            -URI $URI `
+            -UseBasicParsing `
+            -Method "GET" `
+            -ContentType "application/json"
+        if ($Results.'@odata.count') {
+            $TotalServicePrincipalCount = $Results.'@odata.count'
+        }
+        if ($Results.value) {
+            $ServicePrincipalObjects += $Results.value
+        } else {
+            $ServicePrincipalObjects += $Results
+        }
+        $uri = $Results.'@odata.nextlink'
+        If ($ShowProgress) {
+            $PercentComplete = ([Int32](($ServicePrincipalObjects.count/$TotalServicePrincipalCount)*100))
+            Write-Progress -Activity "Enumerating Service Principals" -Status "$($PercentComplete)% complete [$($ServicePrincipalObjects.count) of $($TotalServicePrincipalCount)]" -PercentComplete $PercentComplete
+        }
+    } until (!($uri))
+    Write-Host -ForegroundColor Cyan "Service Principal objects retrieved successfully."
+    $headers = @{
+        "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
+    }
+    #Ingest SP into Neo4j nodes
+    Write-Host -ForegroundColor magenta "Now ingesting Service Principal objects into Neo4j as nodes."
+    Write-Host -ForegroundColor magenta "This may take up to several min."
+    $ServicePrincipalObjects | %{
+        $SPObjectID = $_.id.ToUpper()
+        $SPAppID = $_.appId.ToUpper()
+        $SPDisplayName = $_.displayName
+        $CreateSPNodes | %{
+                $query = "MERGE (sp:Base {appId:'$SPAppID', displayName:'$SPDisplayName', objectId:'$SPObjectID'}) SET sp:AZServicePrincipal"
+                $response = Invoke-RestMethod `
+                -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                -Headers $headers `
+                -Method Post `
+                -ContentType "application/json" `
+                -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
+    }
+"@`
+            }
+        } 
+        #Loop through and MERGE request the relationship between the CAP and the APP
+        Write-Host -ForegroundColor magenta "Creating relationships between Service Principals and the conditional access policies."
+        foreach ($ID in $ServicePrincipalObjects.id.ToUpper())
+        {
+            $headers = @{
+                "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
+            }
+            $query = "MATCH (sp:Base) WHERE sp.appId='$ID' MATCH (p:Base) WHERE p.appId='$ID' MERGE (p)-[:LimitsAccessTo]->(sp)"
+            #Write-Host $query
+        #}
+            $response = Invoke-RestMethod `
+            -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+            -Headers $headers `
+            -Method Post `
+            -ContentType "application/json" `
+            -Body @"
+{
+    "statements": [
+        {
+            "statement": "$query",
+            "resultDataContents": ["row"]
+        }
+    ]
+}
+"@`
+
+        }
+}
+
+-------
+$URI = "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=startswith(displayName,'$($TestGUID)')"
+$Results = $null
+$TestSPObjects = $null
+do {
+    $Results = Invoke-RestMethod `
+        -Headers @{Authorization = "Bearer $($MSGraphGlobalAdminToken)"} `
+        -URI $URI `
+        -UseBasicParsing `
+        -Method "GET" `
+        -ContentType "application/json"
+    if ($Results.value) {
+        $TestSPObjects += $Results.value
+    } else {
+        $TestSPObjects += $Results
+    }
+    $uri = $Results.'@odata.nextlink'
+} until (!($uri))
+
+# Get the current sub-level role assignments
+$URI = "https://management.azure.com/subscriptions/$($SubscriptionID)/providers/Microsoft.Authorization/roleAssignments?api-version=2018-01-01-preview"
+$Request = $null
+$SubLevelRoleAssignments = Invoke-RestMethod `
+    -Headers @{Authorization = "Bearer $($UserAccessAdminAzureRMToken)"} `
+    -URI $URI `
+    -Method GET 
+$RoleAssignmentToDelete = $null
