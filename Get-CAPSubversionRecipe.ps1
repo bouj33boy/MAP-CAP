@@ -35,9 +35,9 @@ Param (
     [switch]
     $AllApps
 )
-If ($AllApps) {
+if ($AllApps) {
     # If $AllApps is specified, require Error if TargetAppID is specified too
-    If ($TargetAppID) {
+    if ($TargetAppID) {
         Write-Error "When specifying the AllApps parameter, do not use the TargetAppID parameter."
         return
     }
@@ -45,7 +45,7 @@ If ($AllApps) {
     $headers = @{
         "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
     }
-    If ($AllApps) {
+    if ($AllApps) {
         Write-Host  -ForegroundColor green "You queried all applications with SourceUserID:'$SourceUserID'"
         $QueryAllApps = "MATCH r=(sp:AZServicePrincipal) Return r"
         $ResponseAllApps = Invoke-RestMethod `
@@ -93,26 +93,74 @@ If ($AllApps) {
             ]
         }
 "@ -ErrorAction SilentlyContinue
-        If ($Response.results.data.row.appID -eq "ALL") {
-            $existingColumns = $csvData[0].PSObject.Properties.Name | Where-Object { $_ -match '^AccessLevel\d+$' }
-            if ($existingColumns) {
-                $highestColumnNumber = ($existingColumns | ForEach-Object { [int]($_ -replace 'AccessLevel', '') } | Sort-Object -Descending)[0]
-                $nextColumnNumber = $highestColumnNumber + 1
-            } else {
-                $nextColumnNumber = 1
-            }
-            $columnName = "AccessLevel$nextColumnNumber"
-            $ResultsAllApps += $Response.results.data.row
-            $ResultsCAPName = $Response.results.data.row.displayName
-            foreach ($row in $csvData){
-                if ($row.AppID -eq $TargetAppID){
-                    $row | Add-Member -Name $columnName -Value "CAP:'$ResultsCAPName'" -MemberType NoteProperty -Force
-                }
+        ####THIS WORKS Below to identify the allowed apps 
+        if ($Response.results.data.row.appId -match "ALL") {
+            $enforcementActions = $Response.results.data.row
+            foreach ($action in $enforcementActions){
+                if ([string]::IsNullOrEmpty($action.enforcementAction)) {
+                        $displayName = $action.displayName
+                        # Determine the column name for the policy
+                        $baseColumnName = 'Policy'
+                        $columnName = $baseColumnName
+                        $counter = 1
 
+                        # Check if the column already exists
+                        while ($csvData[0].PSObject.Properties.Name -contains $columnName) {
+                            $columnName = "${baseColumnName}_$counter"
+                            $counter++
+                        }
+
+                        # Update each row in $csvData with the new policy
+                        $csvData = $csvData | ForEach-Object {
+                            $_ | Add-Member -Name $columnName -Value $displayName -MemberType NoteProperty
+                            $_
+                        }
+                        }
+                        
+                        }
+                }
+                
+            }
+    }
+                # Here we are identifiying CAPs that grant this user access to all applications
+                $displayName = $Response.results.data.row.displayName
+                $baseColumnName = "AllowAllPolicy"
+                $columnName = $baseColumnName
+                $counter = 1
+                while ($csvData[0].PSObject.Properties.Name -contains $columnName) {
+                    $columnName = "${baseColumnName}_$counter"
+                    $counter++
+                }
+                $csvData = $csvData | ForEach-Object {
+                    $_ | Add-Member -Name $columnName -Value $displayName -MemberType NoteProperty
+                    $_
+                }
+            }
+            # Extract the displayName from the response
+            $displayName = $Response.results.data.row.displayName
+
+            # Determine the column name for the policy
+            $baseColumnName = 'AllAppsPolicy'
+            $columnName = $baseColumnName
+            $counter = 1
+
+            # Check if the column already exists
+            while ($csvData[0].PSObject.Properties.Name -contains $columnName) {
+                $columnName = "${baseColumnName}_$counter"
+                $counter++
+            }
+
+            # Update each row in $csvData with the new policy
+            $csvData = $csvData | ForEach-Object {
+                $_ | Add-Member -Name $columnName -Value $displayName -MemberType NoteProperty
+                $_
+            }
         }
-        If ($Response.results.data.row -ne $null -or $Response.results.data.row.appID -eq "ALL") {
+        if ($Response.results.data.row.appID -ne "ALL") {
+            Write-Host $Response.results.data.row.displayName}
             $existingColumns = $csvData[0].PSObject.Properties.Name | Where-Object { $_ -match '^AccessLevel\d+$' }
             if ($existingColumns) {
+                Write-Host "NE null or qll Test1"
                 $highestColumnNumber = ($existingColumns | ForEach-Object { [int]($_ -replace 'AccessLevel', '') } | Sort-Object -Descending)[0]
                 $nextColumnNumber = $highestColumnNumber + 1
             } else {
@@ -127,7 +175,7 @@ If ($AllApps) {
                 }
 
             }
-        Else {
+        if ($Response.results.data.row -eq $null) {
             # Check what groups the user is part of
             # Check if that group is limited by a CAP
             $Query = "MATCH (u:AZUser {userId:'$SourceUserID'}) MATCH (g:AZGroup) MATCH r= (u)-[:MemberOf]->(g) RETURN g.groupId" 
@@ -331,3 +379,8 @@ If ($AllApps) {
         }
 
     }#>
+
+Invoke-RestMethod $ShowProgress
+
+}
+

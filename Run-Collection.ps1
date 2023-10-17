@@ -23,12 +23,38 @@ Run-Collection -beta -accessToken $accessToken
 ipmo ./Run-Collection.ps1
 Run-Collection -beta -neo4JPassword "PASSWORD" -neo4JUserName "USERNAME" -accessToken $accessToken
 
+.EXAMPLE
+ipmo ./Run-Collection.ps1
+Run-Collection -oldResource -accessToken $accessToken2 -accessToken2 $accessToken -tenantId $tenantId
+
 .PARAMETER accessToken
 This is the bearer access token granted by your Azure tenant upon successful authentication. 
 View the README.md and follow the steps listed to save your access token as a variable $accessToken
 
 .PARAMETER beta
 This is a context switch that will make the scrip utilize the /beta API endpoint instead of v1.0.
+
+####################################################################################
+The below parameters are specific to the older resource https://graph.windows.net. #
+####################################################################################
+.PARAMETER tenantId
+This is only utilized in conjunction with accessToken2 and resourceOld to define the tenantId when pulling 
+from the older resource https://graph.windows.net.
+
+.PARAMETER accessToken2
+This is the bearer access token granted by your Azure tenant upon successful authentication for authenticating 
+to the older resource https://graph.windows.net.
+
+.PARAMETER resourceOld
+This switch parameter tells the script that you specifically want to pull from the older resource https://graph.windows.net.
+If you ran this script without this switch or with beta and there are no conditional access policies within the neo4j database, 
+it is likely that the resource provider needed is https://graph.windows.net.
+
+#####################################################################################
+The below parameters are specific to the neo4j instance that you are using locally. #
+This was designed as a POC. For larger environments you'll likely need to use a     #
+larger resource to handle graph visualizations.                                     #
+#####################################################################################
 
 .PARAMETER neo4JURL
 This parameter specifies the neo4j instance to target and ingest the JSON fields. Default is "http://localhost:7474"
@@ -40,11 +66,21 @@ This parameter specifies the neo4j username used for authentication. Default is 
 This parameter specifies the neo4j password used for authentication. Default is "neo4j"
 
 .NOTES
-Future state:
-- Considerations surrounding Conditional Access Policy "all" statements
-- Differentiate between applications listed under the user's tenant and service principals
 
+--------------------------------
+AUTHOR
+Joshua Prager, @bouj33boy
+SpecterOps
 
+.VERSION
+2.0
+
+.DATE
+09/12/2023
+
+.REQUIRED DEPENDENCIES
+This script requires the following modules:
+    - Local neo4j instance running
 
 #>
 [CmdletBinding()]
@@ -56,6 +92,18 @@ param(
     [Parameter(Mandatory=$false)]
     [switch]
     $beta,
+
+    [Parameter(Mandatory=$false)]
+    [string]
+    $tenantId,
+
+    [Parameter(Mandatory=$false)]
+    [string]
+    $accessToken2,
+
+    [Parameter(Mandatory=$false)]
+    [switch]
+    $resourceOld,
     
     [Parameter(Mandatory=$false)]
     [string]
@@ -240,10 +288,176 @@ Function Collect-CAP
 {   
     # Setting errorActionPreference because each CAP is set a little bit differently and we want to avoid $null value errors where conditions are not set
     #############################################
-    $ErrorActionPreference = 'SilentlyContinue'##
+    #$ErrorActionPreference = 'SilentlyContinue'##
     #####Comment This Out If To Troubleshoot#####
     # Initialize headers in each function to avoid errors
-    $headers = @{
+    if ($resourceOld -eq $true) {
+        Write-Host "You chose to switch to the oldResource:  https://graph.windows.net"
+        if ($accessToken2 -eq $null){
+            Write-Host "Access Token for Resource: https://graph.windows.net is needed, pass second access token to AccessToken2 parameter"
+        } else {
+        $headers = @{
+                "Authorization" = "Bearer $accessToken2"
+                "Content-Type" = "application/json; charset=utf-8"
+            }
+            $accessPolicies = Invoke-RestMethod `
+                -UseBasicParsing `
+                -Uri "https://graph.windows.net/$tenantId/policies?api-version=1.61-internal" `
+                -Method "GET" `
+                -Headers $headers 
+            }
+            #Filter access policies based on PolicyType: 18
+            #change the name below (mispelling)
+            $filteredPolicies = $accessPolicies.value | Where-Object { $_.policyType -eq 18 }
+            $filtdPolicies | %{
+                $CAPid = $_.objectId.ToUpper()
+                $CAPDisplayName = $_.displayName
+                $policyDetails = $_.policyDetail | ConvertFrom-Json
+                    $policyDetails | %{
+                        $IncludedUsers = $_.Conditions.Users.Include.Users | ConvertTo-Json
+                        $IncludedUsers | %{
+                            $UserId = $_.ToUpper()
+                        }
+                        $IncludedApplications = $_.Conditions.Applications.Include.Applications |  ConvertTo-Json
+                        $IncludedApplications = $_.Conditions.Applications.Include.Applications |  ConvertTo-Json
+                        $IncludedApplications | %{
+                            $AppID = $_.ToUpper()
+                        }
+                        $DeviceControlsRule = $_.Conditions.Devices.DeviceRule | ConvertTo-Json
+                        $CAPState = $_.State
+                        $enforcementAction = $_.Controls.Control
+                        $ClientType = $_.Conditions.ClientTypes.Include.ClientTypes | ConvertTo-Json
+                        $IncludedPlatforms = $_.Conditions.DevicePlatforms.Include.DevicePlatforms | ConvertTo-Json
+                        }
+                    }
+            if ($filteredPolicies) {
+                Write-Host -ForegroundColor Cyan "Conditional Access Policies retrieved successfully."
+                $headers = @{
+                    "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($neo4JUserName):$($neo4JPassword)"))
+                }
+                Write-Host -ForegroundColor magenta "Ingesting Conditional Access Policies into Neo4j."
+                $CreateCAPNodes | %{
+            $query = "MERGE (p:Base {objectId:'$CAPid', displayName:'$CAPDisplayName', state:'$CAPState',appId:'$AppID', userId:'$UserId', enforcementAction:'$enforcementAction', deviceControlsEnabled:'$DeviceControlsRule', clientTypes: '$ClientType', platforms: '$IncludedPlatforms'}) SET p:AZConditionalAccessPolicy"
+            $response = Invoke-RestMethod `
+            -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+            -Headers $headers `
+            -Method Post `
+            -ContentType "application/json" `
+            -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
+    }
+"@`
+        }
+        # Create (:AZConditionalAccessPolicy) - [:LimitsAccessTo]->(:AZServicePrincial) All Edges
+        $filterdPolicies | %{
+            $CAPid = $_.objectId.ToUpper()
+            $policyDetails = $_.policyDetail | ConvertFrom-Json
+            $policyDetails | %{
+                $IncludedApplications = $_.Conditions.Applications.Include.Applications |  ConvertTo-Json
+                ForEach ($IncludedApplication In $IncludedApplications) {
+                if ($IncludedApplication -Match "All") {
+                    Write-Host -ForegroundColor Green "Creating edge: ('$CAPid':AZConditionalAccessPolicy) - [:LimitsAccessTo]->(ALL:AZServicePrincial) for All service principals and applications."
+                    $query = "MATCH (p:Base {objectId:'$CAPid'}) MATCH (sp:AZServicePrincipal) MERGE (p)-[:LimitsAccessTo]->(sp)"
+                    $response = Invoke-RestMethod `
+                    -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                    -Headers $headers `
+                    -Method Post `
+                    -ContentType "application/json" `
+                    -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
+    }
+"@`
+                } else {
+                $IncludedApplications | %{
+                    $AppID = $_.ToUpper()
+                    Write-Host -ForegroundColor magenta "Creating edge ('$CAPid':AZConditionalAccessPolicy) - [:LimitsAccessTo]->('$AppID':AZServicePrincial)"
+                    $query = "MATCH (p:Base {objectId:'$CAPid'}) MATCH (sp:AZServicePrincipal {appId:'$AppID'}) MERGE (p)-[:LimitsAccessTo]-> (sp)"
+                    $response = Invoke-RestMethod `
+                    -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                    -Headers $headers `
+                    -Method Post `
+                    -ContentType "application/json" `
+                    -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
+    }
+"@`
+                }
+        
+            }
+        }
+        # Create (:AZUser) - [:LimitedBy]->(:AZConditionalAccessPolicy) All Edges
+        $IncludedUsers = $_.Conditions.Users.Include.Users | ConvertTo-Json
+        ForEach ($IncludedUser In $IncludedUsers) {
+            if ($IncludedUser -Match "All") {
+                Write-Host -ForegroundColor Green "Creating edge (:AZUser) - [:LimitedBy]->('$CAPid':AZConditionalAccessPolicy) for All users"
+                $query = "MATCH (p:Base {objectId:'$CAPid'}) MATCH (u:AZUser) MERGE (u)-[:LimitedBy]->(p)"
+                    $response = Invoke-RestMethod `
+                    -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                    -Headers $headers `
+                    -Method Post `
+                    -ContentType "application/json" `
+                    -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
+    }
+"@`
+        } else {
+            $IncludedUsers | %{
+                $UserId = $_.ToUpper()
+                Write-Host -ForegroundColor magenta "Creating edge ('$UserId':AZUser) - [:LimitedBy]->('$CAPid':AZConditionalAccessPolicy) for specific users"
+                $query = "MATCH (p:Base {objectId:'$CAPid'}) MATCH (u:AZUser {userId:'$UserId'}) MERGE (u)-[:LimitedBy]->(p)"
+                    $response = Invoke-RestMethod `
+                    -Uri "http://localhost:7474/db/neo4j/tx/commit" `
+                    -Headers $headers `
+                    -Method Post `
+                    -ContentType "application/json" `
+                    -Body @"
+    {
+        "statements": [
+            {
+                "statement": "$query",
+                "resultDataContents": ["row"]
+            }
+        ]
+    }
+"@`
+                }
+        
+                }
+            }
+        
+                }
+            }
+
+        }
+
+
+    } elseif ($resourceOld -eq $false) {
+    Write-Host "You selected the resource graph.microsoft.com to target" 
+        $headers = @{
         "Authorization" = "Bearer $accessToken"
         "Content-Type" = "application/json"
     }
@@ -256,6 +470,7 @@ Function Collect-CAP
         $apiUrl + $apiUrlCAP 
     }
     $accessPolicies = Invoke-RestMethod -Uri $apiTarget -Headers $headers -Method Get
+    }    
     if ($accessPolicies -and $accessPolicies.value -match "conditions") {
         Write-Host -ForegroundColor Cyan "Conditional Access Policies retrieved successfully."
         $headers = @{
@@ -275,7 +490,7 @@ Function Collect-CAP
             $IncludedUsers = $_.Conditions.users.includeUsers
             $IncludedUsers | %{
                 #Write-Host $_ " is limited by" $CAPid
-                $UserID = $_.ToUpper()
+                $UserId = $_.ToUpper()
             }
             $ExcludedUsers = $_.Conditions.users.excludeUsers
             $ExcludedUsers | %{
@@ -292,11 +507,12 @@ Function Collect-CAP
             $enforcementAction = $_.grantControls.builtInControls
             $IncludedLocations = $_.Conditions.locations.includeLocations
             $IncludedLocations | %{
-                $LocationID = $_.ToUpper()
+                if ($IncludedLocations -ne $null){
+                    $LocationID = $_.ToUpper()
+                } 
             }
             $IncludedUserActions = $_.Conditions.applications.includeUserAction
             $DisabledResilience = $_.sessionControls.disableResilienceDefaults
-            #Need to research this one ^
             $AppEnforcedRestrictions = $_.sessionControls.applicationEnforcedRestrictions
             $PersistentBrowser = $_.sessionControls.persistentBrowser
             $CloudAppSec = $_.sessionControls.cloudAppSecurity
@@ -309,7 +525,7 @@ Function Collect-CAP
             $IncludedPlatforms = $_.Conditions.platforms.includePlatforms
 
         $CreateCAPNodes | %{
-            $query = "MERGE (p:Base {objectId:'$CAPid', displayName:'$CAPDisplayName', state:'$CAPState',appId:'$AppID', userId:'$UserID', excludedUserId:'$ExcludedUsersID', groupId:'$GroupID', excludedGroupId:'$ExcludeGroupID', enforcementAction:'$enforcementAction', locations:'$LocationID', includedUserActions:'$IncludedUserActions', disabledResilience:'$DisabledResilience', appEnforcedRestrictions:'$AppEnforcedRestrictions', persistentBrowser:'$PersistentBrowser', cloudAppSec:'$CloudAppSec', signInFrequency:'$SignInFrequency', continuousAccessEvaluation:'$CAE', secureSignIn:'$SecureSignIn', deviceControlsEnabled:'$DeviceControls', deviceControlsRule:'$DeviceControlsRule', userRiskLevel:'$UserRiskLevel', platforms:'$IncludedPlatforms'}) SET p:AZConditionalAccessPolicy"
+            $query = "MERGE (p:Base {objectId:'$CAPid', displayName:'$CAPDisplayName', state:'$CAPState',appId:'$AppID', userId:'$UserId', excludedUserId:'$ExcludedUsersID', groupId:'$GroupID', excludedGroupId:'$ExcludeGroupID', enforcementAction:'$enforcementAction', locations:'$LocationID', includedUserActions:'$IncludedUserActions', disabledResilience:'$DisabledResilience', appEnforcedRestrictions:'$AppEnforcedRestrictions', persistentBrowser:'$PersistentBrowser', cloudAppSec:'$CloudAppSec', signInFrequency:'$SignInFrequency', continuousAccessEvaluation:'$CAE', secureSignIn:'$SecureSignIn', deviceControlsEnabled:'$DeviceControls', deviceControlsRule:'$DeviceControlsRule', userRiskLevel:'$UserRiskLevel', platforms:'$IncludedPlatforms'}) SET p:AZConditionalAccessPolicy"
             $response = Invoke-RestMethod `
             -Uri "http://localhost:7474/db/neo4j/tx/commit" `
             -Headers $headers `
@@ -522,10 +738,10 @@ Function Collect-Users
         Write-Host -ForegroundColor Cyan "Users retrieved successfully."
         Write-Host -ForegroundColor magenta "Ingesting users into Neo4j."
         $UserObjects | %{
-            $UserID = $_.id.ToUpper()
+            $UserId = $_.id.ToUpper()
             $UserDisplayName = $_.displayName  
             $CreateUserNodes | %{
-                $query = "MERGE (u:Base {userId:'$UserID', displayName:'$UserDisplayName'}) SET u:AZUser"        
+                $query = "MERGE (u:Base {userId:'$UserId', displayName:'$UserDisplayName'}) SET u:AZUser"        
                 $response = Invoke-RestMethod `
                 -Uri "http://localhost:7474/db/neo4j/tx/commit" `
                 -Headers $headers `
@@ -550,12 +766,12 @@ Function Collect-Users
                         break
                     }
                     $user = $UserObjects[$i]
-                    $UserID = $user.id.ToUpper()
+                    $UserId = $user.id.ToUpper()
                     $headers = @{
                         "Authorization" = "Bearer $accessToken"
                         "Content-Type" = "application/json"
                     }
-                    $CheckMembersAPI = "https://graph.microsoft.com/v1.0/users/$UserID/checkMemberGroups"
+                    $CheckMembersAPI = "https://graph.microsoft.com/v1.0/users/$UserId/checkMemberGroups"
                     foreach ($group in $groupArrays){
                         $groupIds = $group 
                         $body = @{
