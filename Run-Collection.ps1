@@ -69,6 +69,13 @@ This parameter specifies the neo4j password used for authentication. Default is 
 TO-DO:
 - Escluded Users/Groups/Directory Role 
 - Parameter to Output to Excel Spreadsheet
+- Collect Locations
+    - Trusted
+    - Untrusted
+- Collect Devices
+    - All devices
+    - Included devices
+    - Excluded devices
 - Get-Accesstoken: Include steps for normal single factor auth
 - Get-Accesstoken: Include how to use in conjunction wth AADInternals or AzureAD
 --------------------------------
