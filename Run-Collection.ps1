@@ -66,7 +66,11 @@ This parameter specifies the neo4j username used for authentication. Default is 
 This parameter specifies the neo4j password used for authentication. Default is "neo4j"
 
 .NOTES
-
+TO-DO:
+- Escluded Users/Groups/Directory Role 
+- Parameter to Output to Excel Spreadsheet
+- Get-Accesstoken: Include steps for normal single factor auth
+- Get-Accesstoken: Include how to use in conjunction wth AADInternals or AzureAD
 --------------------------------
 AUTHOR
 Joshua Prager, @bouj33boy
